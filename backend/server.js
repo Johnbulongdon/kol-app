@@ -277,4 +277,30 @@ app.get("/api/quota-info", (req, res) => {
   res.json({ info: "10,000 units/day free", costs: { search: "100 units/call" } });
 });
 
+// Debug: test activity fetch for a single channel id
+// GET /api/debug-activity?channelId=UCxxxxxx
+app.get("/api/debug-activity", async (req, res) => {
+  const { channelId } = req.query;
+  if (!channelId) return res.status(400).json({ error: "channelId required" });
+  try {
+    const contentRes = await axios.get(`${BASE}/channels`, {
+      params: { part: "contentDetails", id: channelId, key: YT_KEY },
+    });
+    const ch = contentRes.data.items?.[0];
+    const uploadsPlaylistId = ch?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploadsPlaylistId) return res.json({ error: "no uploads playlist", raw: contentRes.data });
+
+    const playlistRes = await axios.get(`${BASE}/playlistItems`, {
+      params: { part: "snippet,contentDetails", playlistId: uploadsPlaylistId, maxResults: 5, key: YT_KEY },
+    });
+    const dates = (playlistRes.data.items || []).map(i => ({
+      title: i.snippet?.title,
+      published: i.contentDetails?.videoPublishedAt || i.snippet?.publishedAt,
+    }));
+    res.json({ uploadsPlaylistId, channelId, dates, raw: playlistRes.data.items?.slice(0,2) });
+  } catch (err) {
+    res.status(500).json({ error: err.message, detail: err.response?.data });
+  }
+});
+
 app.listen(PORT, () => console.log(`KOL API server running on port ${PORT}`));
