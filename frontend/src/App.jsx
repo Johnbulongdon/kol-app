@@ -25,6 +25,26 @@ const COLORS = ["#FF6B35","#00E5FF","#A855F7","#22D3A0","#F59E0B","#6366F1","#EC
 const ac = (name) => COLORS[(name||"?").charCodeAt(0) % COLORS.length];
 const initials = (name) => name?.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase() || "??";
 
+// Activity status helper
+const activityStatus = (daysSince, avgDays) => {
+  if (daysSince === null) return { label: "Unknown", color: "#334155", bg: "#0F172A", dot: "#334155" };
+  if (daysSince > 365) return { label: "Dead", color: "#EF4444", bg: "#2D0A0A", dot: "#EF4444" };
+  if (daysSince > 90)  return { label: `${Math.round(daysSince/30)}mo ago`, color: "#F59E0B", bg: "#1C1009", dot: "#F59E0B" };
+  if (daysSince > 30)  return { label: `${Math.round(daysSince/7)}wk ago`, color: "#F59E0B", bg: "#1C1009", dot: "#F59E0B" };
+  if (daysSince > 7)   return { label: `${daysSince}d ago`, color: "#22D3A0", bg: "#052E16", dot: "#22D3A0" };
+  return { label: daysSince === 0 ? "Today" : `${daysSince}d ago`, color: "#22D3A0", bg: "#052E16", dot: "#22D3A0" };
+};
+
+const freqLabel = (avgDays) => {
+  if (!avgDays) return null;
+  if (avgDays <= 1)  return "Daily";
+  if (avgDays <= 3)  return "2-3x/wk";
+  if (avgDays <= 7)  return "Weekly";
+  if (avgDays <= 14) return "Biweekly";
+  if (avgDays <= 31) return "Monthly";
+  return "Rarely";
+};
+
 export default function App() {
   const [view, setView] = useState("search");
   const [keyword, setKeyword] = useState("");
@@ -34,7 +54,7 @@ export default function App() {
   const [nextPageToken, setNextPageToken] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [filters, setFilters] = useState({ minSubs:"", maxSubs:"", language:"", engMin:"" });
+  const [filters, setFilters] = useState({ minSubs:"", maxSubs:"", language:"", engMin:"", hideDead: true });
   const [selected, setSelected] = useState([]);
   const [cohorts, setCohorts] = useState([]);
   const [cohortName, setCohortName] = useState("");
@@ -67,6 +87,7 @@ export default function App() {
       if (filters.minSubs && k.subscribers < Number(filters.minSubs) * 1000) return false;
       if (filters.maxSubs && k.subscribers > Number(filters.maxSubs) * 1000) return false;
       if (filters.engMin && k.engagementRate < Number(filters.engMin)) return false;
+      if (filters.hideDead && k.daysSincePost !== null && k.daysSincePost > 180) return false;
       return true;
     }).sort((a,b) => b[sortBy] - a[sortBy]);
   }, [results, filters, sortBy]);
@@ -217,10 +238,23 @@ export default function App() {
                         padding:"9px 12px",color:"#F1F5F9",fontSize:13,outline:"none"}}/>
                   </div>
                 </div>
-                <button onClick={()=>setFilters({minSubs:"",maxSubs:"",language:"",engMin:""})}
-                  style={{marginTop:14,background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#334155",padding:0}}>
-                  ✕  Clear all filters
-                </button>
+                <div style={{marginTop:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+                    <div onClick={()=>setFilters(p=>({...p,hideDead:!p.hideDead}))}
+                      style={{width:32,height:18,borderRadius:9,background:filters.hideDead?"#22D3A0":"#1E2A3A",
+                        position:"relative",transition:"background 0.2s",cursor:"pointer",flexShrink:0}}>
+                      <div style={{width:14,height:14,borderRadius:"50%",background:"#fff",
+                        position:"absolute",top:2,left:filters.hideDead?16:2,transition:"left 0.2s"}}/>
+                    </div>
+                    <span style={{fontSize:12,color:filters.hideDead?"#22D3A0":"#475569",fontWeight:500}}>
+                      Hide inactive accounts (6+ months)
+                    </span>
+                  </label>
+                  <button onClick={()=>setFilters({minSubs:"",maxSubs:"",language:"",engMin:"",hideDead:true})}
+                    style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#334155",padding:0}}>
+                    ✕  Clear all filters
+                  </button>
+                </div>
               </div>
 
               {/* Toolbar */}
@@ -297,14 +331,14 @@ export default function App() {
               {!loading && filtered.length>0 && (
                 <>
                   <div style={{border:"1px solid #1A2235",borderRadius:10,overflow:"hidden"}}>
-                    <div style={{display:"grid",gridTemplateColumns:"44px 3fr 90px 120px 90px 60px 70px",
+                    <div style={{display:"grid",gridTemplateColumns:"44px 2.5fr 90px 110px 85px 55px 120px 60px",
                       padding:"11px 20px",background:"#080B14",borderBottom:"1px solid #1A2235",
                       fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.05em",textTransform:"uppercase",gap:8,alignItems:"center"}}>
-                      <div/><div>Creator</div><div>Subscribers</div><div>Total Views</div><div>Engagement</div><div>Videos</div><div>Link</div>
+                      <div/><div>Creator</div><div>Subscribers</div><div>Total Views</div><div>Engagement</div><div>Videos</div><div>Activity</div><div>Link</div>
                     </div>
                     {filtered.map(k=>(
                       <div key={k.id} className="row" onClick={()=>toggle(k.id)} style={{
-                        display:"grid",gridTemplateColumns:"44px 3fr 90px 120px 90px 60px 70px",
+                        display:"grid",gridTemplateColumns:"44px 2.5fr 90px 110px 85px 55px 120px 60px",
                         padding:"13px 20px",borderBottom:"1px solid #0F1520",cursor:"pointer",gap:8,
                         background:selected.includes(k.id)?"#0D1829":"#0C0F1A",
                         borderLeft:selected.includes(k.id)?"3px solid #38BDF8":"3px solid transparent",
@@ -342,6 +376,19 @@ export default function App() {
                           {k.engagementRate}%
                         </div>
                         <div style={{fontSize:13,color:"#64748B"}}>{fmt(k.videos)}</div>
+                        {(() => {
+                          const s = activityStatus(k.daysSincePost, k.avgDaysBetweenPosts);
+                          const freq = freqLabel(k.avgDaysBetweenPosts);
+                          return (
+                            <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                              <div style={{display:"flex",alignItems:"center",gap:5}}>
+                                <div style={{width:6,height:6,borderRadius:"50%",background:s.dot,flexShrink:0}}/>
+                                <span style={{fontSize:11,color:s.color,fontWeight:600,whiteSpace:"nowrap"}}>{s.label}</span>
+                              </div>
+                              {freq && <span style={{fontSize:10,color:"#334155",whiteSpace:"nowrap"}}>{freq}</span>}
+                            </div>
+                          );
+                        })()}
                         <a href={k.youtubeUrl} target="_blank" rel="noreferrer"
                           onClick={e=>e.stopPropagation()}
                           style={{fontSize:11,color:"#64748B",border:"1px solid #1E2A3A",

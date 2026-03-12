@@ -156,6 +156,42 @@ app.get("/api/search", async (req, res) => {
         params: { part: "snippet,statistics,brandingSettings", id: newIds.join(","), key: YT_KEY },
       });
 
+      // Fetch latest video date for each channel (1 search call per channel is too expensive,
+      // so we use the channels.contentDetails part to get uploads playlist, then get latest video)
+      const uploadsMap = {};
+      const contentRes = await axios.get(`${BASE}/channels`, {
+        params: { part: "contentDetails", id: newIds.join(","), key: YT_KEY },
+      });
+      const uploadsPlaylistIds = (contentRes.data.items || []).map(ch => {
+        uploadsMap[ch.id] = ch.contentDetails?.relatedPlaylists?.uploads;
+        return ch.contentDetails?.relatedPlaylists?.uploads;
+      }).filter(Boolean);
+
+      // Batch: fetch latest video from each uploads playlist (1 item each)
+      const latestVideoMap = {};
+      await Promise.all(uploadsPlaylistIds.map(async (playlistId) => {
+        try {
+          const r = await axios.get(`${BASE}/playlistItems`, {
+            params: { part: "snippet", playlistId, maxResults: 5, key: YT_KEY },
+          });
+          const channelId = r.data.items?.[0]?.snippet?.channelId;
+          const publishedAt = r.data.items?.[0]?.snippet?.publishedAt;
+          const dates = (r.data.items || [])
+            .map(i => i.snippet?.publishedAt)
+            .filter(Boolean)
+            .map(d => new Date(d));
+          if (channelId && publishedAt) {
+            latestVideoMap[channelId] = {
+              lastPostDate: publishedAt,
+              // Estimate posting frequency from last 5 videos
+              avgDaysBetweenPosts: dates.length >= 2
+                ? Math.round((dates[0] - dates[dates.length - 1]) / (1000 * 60 * 60 * 24) / (dates.length - 1))
+                : null,
+            };
+          }
+        } catch (_) {}
+      }));
+
       const pageChannels = (statsRes.data.items || []).map(ch => {
         const stats = ch.statistics || {};
         const subs = parseInt(stats.subscriberCount || 0);
@@ -163,6 +199,12 @@ app.get("/api/search", async (req, res) => {
         const videos = parseInt(stats.videoCount || 0);
         const engRate = views > 0 && videos > 0 && subs > 0
           ? Math.min(((views / videos / subs) * 100).toFixed(2), 99) : 0;
+
+        const activity = latestVideoMap[ch.id] || null;
+        const daysSincePost = activity?.lastPostDate
+          ? Math.floor((Date.now() - new Date(activity.lastPostDate)) / (1000 * 60 * 60 * 24))
+          : null;
+
         return {
           id: ch.id,
           name: ch.snippet.title,
@@ -177,6 +219,9 @@ app.get("/api/search", async (req, res) => {
           engagementRate: parseFloat(engRate),
           verified: subs > 100000,
           youtubeUrl: `https://youtube.com/channel/${ch.id}`,
+          lastPostDate: activity?.lastPostDate || null,
+          daysSincePost,
+          avgDaysBetweenPosts: activity?.avgDaysBetweenPosts || null,
         };
       });
 
