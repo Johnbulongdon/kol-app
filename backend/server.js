@@ -22,7 +22,7 @@ app.get("/", (req, res) => res.json({ status: "KOL Source API running" }));
 // ── Search channels ─────────────────────────────────────────────
 // GET /api/search?keyword=python&maxResults=25&pageToken=xxx
 app.get("/api/search", async (req, res) => {
-  const { keyword = "", maxResults = 25, pageToken } = req.query;
+  const { keyword = "", maxResults = 25, pageToken, language = "" } = req.query;
 
   if (!YT_KEY) return res.status(500).json({ error: "YouTube API key not configured" });
   if (!keyword.trim()) return res.status(400).json({ error: "keyword is required" });
@@ -37,6 +37,7 @@ app.get("/api/search", async (req, res) => {
       key: YT_KEY,
     };
     if (pageToken) searchParams.pageToken = pageToken;
+    if (language) searchParams.relevanceLanguage = language;
 
     const searchRes = await axios.get(`${BASE}/search`, { params: searchParams });
     const items = searchRes.data.items || [];
@@ -66,7 +67,7 @@ app.get("/api/search", async (req, res) => {
         description: ch.snippet.description?.slice(0, 120) || "",
         avatar: ch.snippet.thumbnails?.default?.url || "",
         country: ch.snippet.country || "N/A",
-        language: ch.snippet.defaultLanguage || "N/A",
+        language: ch.snippet.defaultLanguage || ch.snippet.defaultAudioLanguage || "N/A",
         subscribers: subs,
         views,
         videos,
