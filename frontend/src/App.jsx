@@ -25,22 +25,37 @@ const COLORS = ["#FF6B35","#00E5FF","#A855F7","#22D3A0","#F59E0B","#6366F1","#EC
 const ac = (name) => COLORS[(name||"?").charCodeAt(0) % COLORS.length];
 const initials = (name) => name?.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase() || "??";
 
+// Score how relevant a channel is to the keyword (0-100)
+const relevanceScore = (channel, keyword) => {
+  if (!keyword) return 50;
+  const kw = keyword.toLowerCase();
+  const name = (channel.name || "").toLowerCase();
+  const desc = (channel.description || "").toLowerCase();
+  if (name.includes(kw)) return 95;
+  if (desc.includes(kw)) return 70;
+  const words = kw.split(" ");
+  const matchCount = words.filter(w => name.includes(w) || desc.includes(w)).length;
+  return Math.round((matchCount / words.length) * 50);
+};
+
 export default function App() {
   const [view, setView] = useState("search");
   const [keyword, setKeyword] = useState("");
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
+  const [rejected, setRejected] = useState(new Set());
   const [nextPageToken, setNextPageToken] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [filters, setFilters] = useState({ minSubs:"", maxSubs:"", language:"", engMin:"", verified:"" });
+  const [filters, setFilters] = useState({ minSubs:"", maxSubs:"", language:"", engMin:"" });
   const [selected, setSelected] = useState([]);
   const [cohorts, setCohorts] = useState([]);
   const [cohortName, setCohortName] = useState("");
   const [activeCohort, setActiveCohort] = useState(null);
   const [toast, setToast] = useState(null);
   const [sortBy, setSortBy] = useState("subscribers");
+  const [showRejected, setShowRejected] = useState(false);
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null), 3000); };
 
@@ -48,6 +63,7 @@ export default function App() {
     if (!keyword.trim()) return setError("Please enter a keyword");
     setError("");
     pageToken ? setLoadingMore(true) : setLoading(true);
+    if (!pageToken) setRejected(new Set());
     try {
       const params = new URLSearchParams({ keyword, maxResults: 25 });
       if (pageToken) params.append("pageToken", pageToken);
@@ -63,16 +79,32 @@ export default function App() {
   }, [keyword, filters.language]);
 
   const filtered = useMemo(() => {
-    return results.filter(k => {
-      if (filters.minSubs && k.subscribers < Number(filters.minSubs) * 1000) return false;
-      if (filters.maxSubs && k.subscribers > Number(filters.maxSubs) * 1000) return false;
-      if (filters.engMin && k.engagementRate < Number(filters.engMin)) return false;
-      if (filters.verified === "yes" && !k.verified) return false;
-      return true;
-    }).sort((a,b) => b[sortBy] - a[sortBy]);
-  }, [results, filters, sortBy]);
+    return results
+      .filter(k => {
+        if (rejected.has(k.id) && !showRejected) return false;
+        if (filters.minSubs && k.subscribers < Number(filters.minSubs) * 1000) return false;
+        if (filters.maxSubs && k.subscribers > Number(filters.maxSubs) * 1000) return false;
+        if (filters.engMin && k.engagementRate < Number(filters.engMin)) return false;
+        return true;
+      })
+      .map(k => ({ ...k, score: relevanceScore(k, keyword) }))
+      .sort((a,b) => {
+        if (sortBy === "relevance") return b.score - a.score;
+        return b[sortBy] - a[sortBy];
+      });
+  }, [results, filters, sortBy, rejected, showRejected, keyword]);
 
-  const toggle = (id) => setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s,id]);
+  const reject = (e, id) => {
+    e.stopPropagation();
+    setRejected(prev => new Set([...prev, id]));
+    setSelected(s => s.filter(x => x !== id));
+    showToast("Creator removed from results");
+  };
+
+  const toggle = (id) => {
+    if (rejected.has(id)) return;
+    setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s,id]);
+  };
 
   const saveCohort = () => {
     if (!cohortName.trim() || selected.length === 0) return showToast("Name your cohort and select at least 1 KOL","error");
@@ -95,6 +127,9 @@ export default function App() {
   const removeFromCohort = (cId, kId) =>
     setCohorts(c => c.map(g => g.id===cId ? {...g, kols: g.kols.filter(k=>k.id!==kId)} : g));
 
+  const visibleCount = filtered.filter(k => !rejected.has(k.id)).length;
+  const rejectedCount = rejected.size;
+
   return (
     <div style={{background:"#0C0F1A",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",color:"#C8D0E0"}}>
       <style>{`
@@ -104,14 +139,14 @@ export default function App() {
         ::-webkit-scrollbar { width:5px; }
         ::-webkit-scrollbar-thumb { background:#1E2A3A; border-radius:4px; }
         .row:hover { background:#131929 !important; }
+        .row:hover .reject-btn { opacity:1 !important; }
         .nb:hover { background:#131929 !important; }
         .eb:hover { filter:brightness(1.1); }
         .chip:hover { border-color:#38BDF8 !important; color:#38BDF8 !important; }
-        input:focus, select:focus { border-color:#334155 !important; }
+        .reject-btn { opacity:0; transition:opacity 0.15s; }
         a { color:inherit; text-decoration:none; }
       `}</style>
 
-      {/* Toast */}
       {toast && (
         <div style={{position:"fixed",bottom:28,right:28,zIndex:9999,padding:"13px 20px",borderRadius:8,
           background:toast.type==="error"?"#2D0A0A":"#0A2218",
@@ -124,15 +159,14 @@ export default function App() {
 
       <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
 
-        {/* ── Sidebar ── */}
+        {/* Sidebar */}
         <div style={{width:220,background:"#080B14",borderRight:"1px solid #1A2235",display:"flex",flexDirection:"column",flexShrink:0}}>
           <div style={{padding:"24px 20px 20px",borderBottom:"1px solid #1A2235"}}>
             <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",letterSpacing:"-0.3px",display:"flex",alignItems:"center",gap:8}}>
               <span style={{color:"#38BDF8",fontSize:20}}>◈</span> KOL Source
             </div>
-            <div style={{fontSize:11,color:"#334155",marginTop:4,letterSpacing:"0.05em"}}>YouTube Creator Search</div>
+            <div style={{fontSize:11,color:"#334155",marginTop:4}}>YouTube Creator Search</div>
           </div>
-
           <div style={{padding:"10px 0"}}>
             {[
               {id:"search",icon:"🔍",label:"Search"},
@@ -147,7 +181,6 @@ export default function App() {
               </button>
             ))}
           </div>
-
           <div style={{flex:1}}/>
           <div style={{padding:"16px 20px",borderTop:"1px solid #1A2235"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -158,20 +191,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* ── Main ── */}
         <div style={{flex:1,overflow:"auto",background:"#0C0F1A"}}>
 
-          {/* ═══ SEARCH VIEW ═══ */}
+          {/* ══ SEARCH ══ */}
           {view==="search" && (
             <div style={{padding:"32px 36px",maxWidth:1100}}>
-
-              {/* Header */}
               <div style={{marginBottom:28}}>
                 <h1 style={{fontSize:22,fontWeight:700,color:"#F1F5F9",margin:"0 0 6px",letterSpacing:"-0.3px"}}>
                   Find YouTube Creators
                 </h1>
                 <p style={{fontSize:13,color:"#64748B",margin:0}}>
-                  Search by keyword · filter by language, subscribers & engagement
+                  Search · filter · remove irrelevant results · save to cohort
                 </p>
               </div>
 
@@ -179,83 +209,86 @@ export default function App() {
               <div style={{display:"flex",gap:10,marginBottom:18}}>
                 <input value={keyword} onChange={e=>setKeyword(e.target.value)}
                   onKeyDown={e=>e.key==="Enter"&&doSearch()}
-                  placeholder='e.g.  "python tutorial"  ·  "fitness"  ·  "tech review"'
+                  placeholder='e.g. "fitness" · "crypto" · "cooking" · "beauty"'
                   style={{flex:1,background:"#111827",border:"1px solid #1E2A3A",borderRadius:8,
                     padding:"13px 18px",color:"#F1F5F9",fontSize:14,outline:"none"}}/>
                 <button onClick={()=>doSearch()} style={{
                   background:"#38BDF8",color:"#0A0F1A",border:"none",borderRadius:8,
-                  padding:"13px 28px",fontSize:13,fontWeight:700,cursor:"pointer",letterSpacing:"0.02em",
-                  transition:"filter 0.15s",minWidth:110}}>
-                  {loading ? "Searching..." : "Search"}
+                  padding:"13px 28px",fontSize:13,fontWeight:700,cursor:"pointer",minWidth:110}}>
+                  {loading?"Searching...":"Search"}
                 </button>
               </div>
 
               {error && (
                 <div style={{background:"#2D0A0A",border:"1px solid #EF4444",borderRadius:8,
-                  padding:"12px 16px",marginBottom:16,fontSize:13,color:"#FCA5A5"}}>
-                  ✕  {error}
-                </div>
+                  padding:"12px 16px",marginBottom:16,fontSize:13,color:"#FCA5A5"}}>✕  {error}</div>
               )}
 
               {/* Filters */}
               <div style={{background:"#080B14",border:"1px solid #1A2235",borderRadius:10,padding:"18px 20px",marginBottom:20}}>
-                <div style={{fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:14}}>
-                  Filters
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12}}>
-                  {/* Language - full width on its row */}
-                  <div style={{gridColumn:"span 2"}}>
-                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Language</label>
+                <div style={{fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:14}}>Filters</div>
+                <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:12}}>
+                  <div>
+                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Language / Region</label>
                     <select value={filters.language} onChange={e=>setFilters(p=>({...p,language:e.target.value}))}
                       style={{width:"100%",background:"#0C0F1A",border:"1px solid #1E2A3A",borderRadius:6,
                         padding:"9px 12px",color:filters.language?"#F1F5F9":"#64748B",fontSize:13,outline:"none"}}>
                       <option value="">Any language</option>
                       {LANGUAGES.map(l=><option key={l.code} value={l.code}>{l.label}</option>)}
                     </select>
+                    {filters.language && filters.language !== "en" && (
+                      <div style={{fontSize:10,color:"#475569",marginTop:4}}>
+                        ⚠ YouTube API has limited language accuracy — use the ✕ button to remove irrelevant results
+                      </div>
+                    )}
                   </div>
                   <div>
-                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Min Subs</label>
+                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Min Subs (K)</label>
                     <input type="number" value={filters.minSubs} onChange={e=>setFilters(p=>({...p,minSubs:e.target.value}))}
-                      placeholder="e.g. 10K"
+                      placeholder="e.g. 10"
                       style={{width:"100%",background:"#0C0F1A",border:"1px solid #1E2A3A",borderRadius:6,
                         padding:"9px 12px",color:"#F1F5F9",fontSize:13,outline:"none"}}/>
-                    <div style={{fontSize:10,color:"#334155",marginTop:3}}>in thousands</div>
                   </div>
                   <div>
-                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Max Subs</label>
+                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Max Subs (K)</label>
                     <input type="number" value={filters.maxSubs} onChange={e=>setFilters(p=>({...p,maxSubs:e.target.value}))}
-                      placeholder="e.g. 5000K"
+                      placeholder="e.g. 5000"
                       style={{width:"100%",background:"#0C0F1A",border:"1px solid #1E2A3A",borderRadius:6,
                         padding:"9px 12px",color:"#F1F5F9",fontSize:13,outline:"none"}}/>
-                    <div style={{fontSize:10,color:"#334155",marginTop:3}}>in thousands</div>
                   </div>
                   <div>
-                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Min Engagement %</label>
+                    <label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6,fontWeight:500}}>Min Eng %</label>
                     <input type="number" value={filters.engMin} onChange={e=>setFilters(p=>({...p,engMin:e.target.value}))}
                       placeholder="e.g. 3"
                       style={{width:"100%",background:"#0C0F1A",border:"1px solid #1E2A3A",borderRadius:6,
                         padding:"9px 12px",color:"#F1F5F9",fontSize:13,outline:"none"}}/>
                   </div>
                 </div>
-                <button onClick={()=>setFilters({minSubs:"",maxSubs:"",language:"",engMin:"",verified:""})}
-                  style={{marginTop:14,background:"none",border:"none",cursor:"pointer",fontSize:12,
-                    color:"#334155",padding:0,display:"flex",alignItems:"center",gap:4}}>
+                <button onClick={()=>setFilters({minSubs:"",maxSubs:"",language:"",engMin:""})}
+                  style={{marginTop:14,background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#334155",padding:0}}>
                   ✕  Clear all filters
                 </button>
               </div>
 
-              {/* Results toolbar */}
+              {/* Toolbar */}
               {searched && !loading && (
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:10}}>
                   <div style={{display:"flex",alignItems:"center",gap:12}}>
                     <span style={{fontSize:14,color:"#94A3B8"}}>
-                      <span style={{color:"#38BDF8",fontWeight:700,fontSize:16}}>{filtered.length}</span>
-                      <span style={{marginLeft:5}}>creators found</span>
+                      <span style={{color:"#38BDF8",fontWeight:700,fontSize:16}}>{visibleCount}</span>
+                      <span style={{marginLeft:5}}>creators</span>
+                      {rejectedCount > 0 && (
+                        <button onClick={()=>setShowRejected(p=>!p)}
+                          style={{marginLeft:10,background:"none",border:"1px solid #1E2A3A",borderRadius:5,
+                            padding:"2px 8px",fontSize:11,color:"#475569",cursor:"pointer"}}>
+                          {showRejected ? "Hide" : "Show"} {rejectedCount} removed
+                        </button>
+                      )}
                       {selected.length>0 && <span style={{color:"#F59E0B",marginLeft:12}}>· {selected.length} selected</span>}
                     </span>
-                    {filtered.length>0 && (
+                    {visibleCount>0 && (
                       <div style={{display:"flex",gap:6}}>
-                        <button onClick={()=>setSelected(filtered.map(k=>k.id))}
+                        <button onClick={()=>setSelected(filtered.filter(k=>!rejected.has(k.id)).map(k=>k.id))}
                           style={{background:"none",border:"1px solid #1E2A3A",borderRadius:5,
                             padding:"4px 10px",fontSize:11,color:"#64748B",cursor:"pointer",fontWeight:500}}>
                           Select all
@@ -263,28 +296,26 @@ export default function App() {
                         {selected.length>0 && (
                           <button onClick={()=>setSelected([])}
                             style={{background:"none",border:"1px solid #1E2A3A",borderRadius:5,
-                              padding:"4px 10px",fontSize:11,color:"#475569",cursor:"pointer"}}>
-                            Clear
-                          </button>
+                              padding:"4px 10px",fontSize:11,color:"#475569",cursor:"pointer"}}>Clear</button>
                         )}
                       </div>
                     )}
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    {filtered.length>0 && (
-                      <button className="eb" onClick={()=>doExport(filtered,keyword?`search-${keyword}`:"results")}
+                    {visibleCount>0 && (
+                      <button className="eb" onClick={()=>doExport(filtered.filter(k=>!rejected.has(k.id)),keyword?`search-${keyword}`:"results")}
                         style={{background:"#22D3A0",color:"#051A12",border:"none",borderRadius:6,
-                          padding:"8px 16px",fontSize:12,fontWeight:700,cursor:"pointer",transition:"filter 0.15s"}}>
-                        ↓ Export results ({filtered.length})
+                          padding:"8px 16px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                        ↓ Export ({visibleCount})
                       </button>
                     )}
-                    <div style={{display:"flex",alignItems:"center",gap:6,background:"#080B14",border:"1px solid #1A2235",borderRadius:6,padding:"4px 6px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4,background:"#080B14",border:"1px solid #1A2235",borderRadius:6,padding:"4px 6px"}}>
                       <span style={{fontSize:11,color:"#475569",paddingLeft:4}}>Sort:</span>
-                      {[["subscribers","Subs"],["views","Views"],["engagementRate","Eng%"]].map(([s,l])=>(
+                      {[["subscribers","Subs"],["views","Views"],["engagementRate","Eng%"],["relevance","Relevance"]].map(([s,l])=>(
                         <button key={s} className="chip" onClick={()=>setSortBy(s)} style={{
                           background:sortBy===s?"#0F1929":"none",
                           border:`1px solid ${sortBy===s?"#38BDF8":"transparent"}`,
-                          color:sortBy===s?"#38BDF8":"#475569",fontSize:11,padding:"4px 10px",borderRadius:5,
+                          color:sortBy===s?"#38BDF8":"#475569",fontSize:11,padding:"4px 9px",borderRadius:5,
                           cursor:"pointer",fontWeight:sortBy===s?600:400,transition:"all 0.15s"}}>
                           {l}
                         </button>
@@ -311,112 +342,100 @@ export default function App() {
                 </div>
               )}
 
-              {/* Loading */}
-              {loading && (
-                <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>
-                  Searching YouTube...
-                </div>
-              )}
-
-              {/* No results */}
+              {loading && <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>Searching YouTube...</div>}
               {!loading && searched && filtered.length===0 && (
-                <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>
-                  No results — try a different keyword or adjust your filters
-                </div>
+                <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>No results — try a different keyword</div>
               )}
 
               {/* Results table */}
               {!loading && filtered.length>0 && (
                 <>
                   <div style={{border:"1px solid #1A2235",borderRadius:10,overflow:"hidden"}}>
-                    {/* Table header */}
-                    <div style={{display:"grid",gridTemplateColumns:"44px 3fr 90px 120px 90px 60px 70px",
+                    <div style={{display:"grid",gridTemplateColumns:"44px 1fr 90px 100px 80px 52px 52px",
                       padding:"11px 20px",background:"#080B14",borderBottom:"1px solid #1A2235",
                       fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.05em",textTransform:"uppercase",gap:8,alignItems:"center"}}>
-                      <div/>
-                      <div>Creator</div>
-                      <div>Subscribers</div>
-                      <div>Total Views</div>
-                      <div>Engagement</div>
-                      <div>Videos</div>
-                      <div>Link</div>
+                      <div/><div>Creator</div><div>Subscribers</div><div>Views</div><div>Engagement</div><div>Videos</div><div/>
                     </div>
 
-                    {/* Rows */}
-                    {filtered.map((k,i)=>(
-                      <div key={k.id} className="row" onClick={()=>toggle(k.id)} style={{
-                        display:"grid",gridTemplateColumns:"44px 3fr 90px 120px 90px 60px 70px",
-                        padding:"13px 20px",borderBottom:"1px solid #0F1520",cursor:"pointer",gap:8,
-                        background:selected.includes(k.id)?"#0D1829":"#0C0F1A",
-                        borderLeft:selected.includes(k.id)?"3px solid #38BDF8":"3px solid transparent",
-                        transition:"background 0.1s",alignItems:"center"}}>
+                    {filtered.map(k => {
+                      const isRejected = rejected.has(k.id);
+                      return (
+                        <div key={k.id} className="row" onClick={()=>toggle(k.id)} style={{
+                          display:"grid",gridTemplateColumns:"44px 1fr 90px 100px 80px 52px 52px",
+                          padding:"12px 20px",borderBottom:"1px solid #0F1520",cursor:"pointer",gap:8,
+                          background: isRejected ? "#0A0C14" : selected.includes(k.id) ? "#0D1829" : "#0C0F1A",
+                          borderLeft: isRejected ? "3px solid #1E2A3A" : selected.includes(k.id) ? "3px solid #38BDF8" : "3px solid transparent",
+                          opacity: isRejected ? 0.35 : 1,
+                          transition:"all 0.1s",alignItems:"center"}}>
 
-                        {/* Checkbox */}
-                        <div style={{width:18,height:18,borderRadius:4,
-                          border:`2px solid ${selected.includes(k.id)?"#38BDF8":"#1E2A3A"}`,
-                          background:selected.includes(k.id)?"#38BDF8":"none",
-                          display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#0A0F1A",flexShrink:0}}>
-                          {selected.includes(k.id)&&"✓"}
-                        </div>
+                          {/* Checkbox */}
+                          <div style={{width:18,height:18,borderRadius:4,
+                            border:`2px solid ${selected.includes(k.id)?"#38BDF8":"#1E2A3A"}`,
+                            background:selected.includes(k.id)?"#38BDF8":"none",
+                            display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#0A0F1A",flexShrink:0}}>
+                            {selected.includes(k.id)&&"✓"}
+                          </div>
 
-                        {/* Creator info */}
-                        <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
-                          {k.avatar
-                            ? <img src={k.avatar} alt="" style={{width:38,height:38,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:"2px solid #1A2235"}}/>
-                            : <div style={{width:38,height:38,borderRadius:"50%",background:ac(k.name),display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#fff",flexShrink:0}}>{initials(k.name)}</div>
-                          }
-                          <div style={{minWidth:0}}>
-                            <div style={{fontSize:14,color:"#F1F5F9",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center",gap:6}}>
-                              {k.name}
-                              {k.verified && <span style={{fontSize:11,color:"#38BDF8"}}>✓</span>}
-                            </div>
-                            <div style={{fontSize:12,color:"#475569",marginTop:1,display:"flex",alignItems:"center",gap:8}}>
-                              <span>{k.handle}</span>
-                              {k.language && k.language !== "N/A" && (
-                                <span style={{background:"#0F1929",border:"1px solid #1E2A3A",borderRadius:4,
-                                  padding:"1px 6px",fontSize:10,color:"#64748B"}}>
-                                  {LANGUAGES.find(l=>l.code===k.language)?.label || k.language}
-                                </span>
+                          {/* Creator */}
+                          <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
+                            {k.avatar
+                              ? <img src={k.avatar} alt="" style={{width:36,height:36,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:"2px solid #1A2235"}}/>
+                              : <div style={{width:36,height:36,borderRadius:"50%",background:ac(k.name),display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",flexShrink:0}}>{initials(k.name)}</div>
+                            }
+                            <div style={{minWidth:0,flex:1}}>
+                              <div style={{fontSize:14,color:"#F1F5F9",fontWeight:600,display:"flex",alignItems:"center",gap:6}}>
+                                <span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{k.name}</span>
+                                {k.verified && <span style={{fontSize:11,color:"#38BDF8",flexShrink:0}}>✓</span>}
+                                {/* Relevance indicator */}
+                                {k.score >= 70 && <span style={{fontSize:9,background:"#052E16",color:"#22C55E",border:"1px solid #166534",borderRadius:3,padding:"1px 5px",flexShrink:0}}>MATCH</span>}
+                                {k.score < 30 && <span style={{fontSize:9,background:"#1C1009",color:"#F59E0B",border:"1px solid #78350F",borderRadius:3,padding:"1px 5px",flexShrink:0}}>LOW MATCH</span>}
+                              </div>
+                              <div style={{fontSize:11,color:"#475569",marginTop:2,display:"flex",alignItems:"center",gap:8}}>
+                                <span>{k.handle}</span>
+                                {k.country && k.country !== "N/A" && <span>· {k.country}</span>}
+                              </div>
+                              {/* Description preview */}
+                              {k.description && (
+                                <div style={{fontSize:11,color:"#334155",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:400}}>
+                                  {k.description}
+                                </div>
                               )}
                             </div>
                           </div>
-                        </div>
 
-                        {/* Stats */}
-                        <div style={{fontSize:14,color:"#E2E8F0",fontWeight:600}}>{fmt(k.subscribers)}</div>
-                        <div style={{fontSize:13,color:"#94A3B8"}}>{fmt(k.views)}</div>
-                        <div>
-                          <span style={{fontSize:13,fontWeight:600,
+                          <div style={{fontSize:14,color:"#E2E8F0",fontWeight:600}}>{fmt(k.subscribers)}</div>
+                          <div style={{fontSize:13,color:"#94A3B8"}}>{fmt(k.views)}</div>
+                          <div style={{fontSize:13,fontWeight:600,
                             color:k.engagementRate>=5?"#22D3A0":k.engagementRate>=3?"#F59E0B":"#94A3B8"}}>
                             {k.engagementRate}%
-                          </span>
+                          </div>
+                          <div style={{fontSize:13,color:"#64748B"}}>{fmt(k.videos)}</div>
+
+                          {/* Reject button */}
+                          <button className="reject-btn" onClick={e=>isRejected ? (e.stopPropagation(), setRejected(prev=>{const n=new Set(prev);n.delete(k.id);return n;})) : reject(e, k.id)}
+                            title={isRejected?"Restore":"Remove — not relevant"}
+                            style={{background:"none",border:`1px solid ${isRejected?"#1E2A3A":"#EF444430"}`,
+                              borderRadius:5,padding:"4px 8px",fontSize:12,
+                              color:isRejected?"#475569":"#EF4444",cursor:"pointer",flexShrink:0}}>
+                            {isRejected?"↩":"✕"}
+                          </button>
                         </div>
-                        <div style={{fontSize:13,color:"#64748B"}}>{fmt(k.videos)}</div>
-                        <a href={k.youtubeUrl} target="_blank" rel="noreferrer"
-                          onClick={e=>e.stopPropagation()}
-                          style={{fontSize:11,color:"#64748B",border:"1px solid #1E2A3A",
-                            borderRadius:5,padding:"4px 10px",display:"inline-block",
-                            transition:"border-color 0.15s",textAlign:"center"}}>
-                          View ↗
-                        </a>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
-                  {/* Load more */}
                   {nextPageToken && (
                     <div style={{textAlign:"center",marginTop:18}}>
                       <button onClick={()=>doSearch(nextPageToken)} disabled={loadingMore}
                         style={{background:"none",border:"1px solid #1E2A3A",borderRadius:7,
                           padding:"11px 28px",fontSize:13,color:"#64748B",cursor:"pointer",fontWeight:500}}>
-                        {loadingMore ? "Loading..." : "Load more results"}
+                        {loadingMore?"Loading...":"Load more results"}
                       </button>
                     </div>
                   )}
                 </>
               )}
 
-              {/* Empty state */}
               {!searched && (
                 <div style={{textAlign:"center",padding:"80px 20px"}}>
                   <div style={{fontSize:48,marginBottom:16}}>🔍</div>
@@ -427,33 +446,26 @@ export default function App() {
             </div>
           )}
 
-          {/* ═══ COHORTS VIEW ═══ */}
+          {/* ══ COHORTS ══ */}
           {view==="cohorts" && (
             <div style={{padding:"32px 36px",maxWidth:1100}}>
               <div style={{marginBottom:28}}>
-                <h1 style={{fontSize:22,fontWeight:700,color:"#F1F5F9",margin:"0 0 6px",letterSpacing:"-0.3px"}}>
-                  Cohort Manager
-                </h1>
-                <p style={{fontSize:13,color:"#64748B",margin:0}}>
-                  View, edit and export your saved creator groups
-                </p>
+                <h1 style={{fontSize:22,fontWeight:700,color:"#F1F5F9",margin:"0 0 6px",letterSpacing:"-0.3px"}}>Cohort Manager</h1>
+                <p style={{fontSize:13,color:"#64748B",margin:0}}>View, edit and export your saved creator groups</p>
               </div>
 
               {cohorts.length===0 && (
                 <div style={{textAlign:"center",padding:"80px 20px"}}>
                   <div style={{fontSize:48,marginBottom:16}}>📁</div>
                   <div style={{fontSize:16,color:"#334155",fontWeight:600,marginBottom:8}}>No cohorts yet</div>
-                  <div style={{fontSize:13,color:"#1E293B"}}>Go to Search → select creators → Save Cohort</div>
+                  <div style={{fontSize:13,color:"#1E293B"}}>Search → select creators → Save Cohort</div>
                 </div>
               )}
 
               <div style={{display:"flex",flexDirection:"column",gap:16}}>
                 {cohorts.map(cohort=>(
                   <div key={cohort.id} style={{border:"1px solid #1A2235",borderRadius:10,overflow:"hidden"}}>
-
-                    {/* Cohort header */}
-                    <div style={{background:"#080B14",padding:"16px 22px",
-                      display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid #1A2235"}}>
+                    <div style={{background:"#080B14",padding:"16px 22px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid #1A2235"}}>
                       <div style={{display:"flex",alignItems:"center",gap:12}}>
                         <span style={{fontSize:22}}>📁</span>
                         <div>
@@ -465,28 +477,24 @@ export default function App() {
                       </div>
                       <div style={{display:"flex",gap:8}}>
                         <button onClick={()=>setActiveCohort(activeCohort===cohort.id?null:cohort.id)}
-                          style={{background:"none",border:"1px solid #1E2A3A",borderRadius:7,
-                            padding:"7px 16px",fontSize:12,color:"#64748B",cursor:"pointer",fontWeight:500}}>
+                          style={{background:"none",border:"1px solid #1E2A3A",borderRadius:7,padding:"7px 16px",fontSize:12,color:"#64748B",cursor:"pointer",fontWeight:500}}>
                           {activeCohort===cohort.id?"Collapse":"Expand"}
                         </button>
                         <button className="eb" onClick={()=>doExport(cohort.kols,cohort.name)}
-                          style={{background:"#22D3A0",border:"none",borderRadius:7,
-                            padding:"7px 16px",fontSize:12,fontWeight:700,color:"#051A12",cursor:"pointer",transition:"filter 0.15s"}}>
+                          style={{background:"#22D3A0",border:"none",borderRadius:7,padding:"7px 16px",fontSize:12,fontWeight:700,color:"#051A12",cursor:"pointer"}}>
                           ↓ Export CSV
                         </button>
                         <button onClick={()=>setCohorts(c=>c.filter(g=>g.id!==cohort.id))}
-                          style={{background:"none",border:"1px solid #EF444430",borderRadius:7,
-                            padding:"7px 12px",fontSize:13,color:"#EF4444",cursor:"pointer"}}>✕</button>
+                          style={{background:"none",border:"1px solid #EF444430",borderRadius:7,padding:"7px 12px",fontSize:13,color:"#EF4444",cursor:"pointer"}}>✕</button>
                       </div>
                     </div>
 
-                    {/* Stats strip */}
                     <div style={{padding:"12px 22px",background:"#090C15",display:"flex",gap:28,borderBottom:"1px solid #0F1520",flexWrap:"wrap"}}>
                       {[
-                        {l:"Avg Subscribers", v:fmt(Math.round(cohort.kols.reduce((a,k)=>a+k.subscribers,0)/cohort.kols.length))},
-                        {l:"Total Views", v:fmt(cohort.kols.reduce((a,k)=>a+k.views,0))},
-                        {l:"Avg Engagement", v:(cohort.kols.reduce((a,k)=>a+k.engagementRate,0)/cohort.kols.length).toFixed(1)+"%"},
-                        {l:"Creators", v:cohort.kols.length},
+                        {l:"Avg Subscribers",v:fmt(Math.round(cohort.kols.reduce((a,k)=>a+k.subscribers,0)/cohort.kols.length))},
+                        {l:"Total Views",v:fmt(cohort.kols.reduce((a,k)=>a+k.views,0))},
+                        {l:"Avg Engagement",v:(cohort.kols.reduce((a,k)=>a+k.engagementRate,0)/cohort.kols.length).toFixed(1)+"%"},
+                        {l:"Creators",v:cohort.kols.length},
                       ].map(s=>(
                         <div key={s.l}>
                           <div style={{fontSize:11,color:"#334155",fontWeight:500,marginBottom:3}}>{s.l}</div>
@@ -495,17 +503,14 @@ export default function App() {
                       ))}
                     </div>
 
-                    {/* KOL rows */}
                     {activeCohort===cohort.id && (
                       <div>
                         <div style={{display:"grid",gridTemplateColumns:"2.5fr 100px 90px 1fr 36px",
-                          padding:"10px 22px",background:"#080B14",
-                          fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.05em",textTransform:"uppercase",gap:12}}>
+                          padding:"10px 22px",background:"#080B14",fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.05em",textTransform:"uppercase",gap:12}}>
                           <div>Creator</div><div>Subscribers</div><div>Engagement</div><div>Notes</div><div/>
                         </div>
                         {cohort.kols.map(k=>(
-                          <div key={k.id} style={{
-                            display:"grid",gridTemplateColumns:"2.5fr 100px 90px 1fr 36px",
+                          <div key={k.id} style={{display:"grid",gridTemplateColumns:"2.5fr 100px 90px 1fr 36px",
                             padding:"12px 22px",borderBottom:"1px solid #0F1520",gap:12,alignItems:"center",background:"#0C0F1A"}}>
                             <div style={{display:"flex",alignItems:"center",gap:10}}>
                               {k.avatar
@@ -518,15 +523,10 @@ export default function App() {
                               </div>
                             </div>
                             <div style={{fontSize:13,color:"#E2E8F0",fontWeight:600}}>{fmt(k.subscribers)}</div>
-                            <div style={{fontSize:13,fontWeight:600,
-                              color:k.engagementRate>=5?"#22D3A0":k.engagementRate>=3?"#F59E0B":"#94A3B8"}}>
-                              {k.engagementRate}%
-                            </div>
-                            <input placeholder="Add a note..."
-                              value={cohort.notes?.[k.id]||""}
-                              onChange={e=>{const v=e.target.value; setCohorts(c=>c.map(g=>g.id===cohort.id?{...g,notes:{...g.notes,[k.id]:v}}:g));}}
-                              style={{background:"#080B14",border:"1px solid #1A2235",borderRadius:6,
-                                padding:"7px 12px",color:"#E2E8F0",fontSize:12,outline:"none",width:"100%"}}/>
+                            <div style={{fontSize:13,fontWeight:600,color:k.engagementRate>=5?"#22D3A0":k.engagementRate>=3?"#F59E0B":"#94A3B8"}}>{k.engagementRate}%</div>
+                            <input placeholder="Add a note..." value={cohort.notes?.[k.id]||""}
+                              onChange={e=>{const v=e.target.value;setCohorts(c=>c.map(g=>g.id===cohort.id?{...g,notes:{...g.notes,[k.id]:v}}:g));}}
+                              style={{background:"#080B14",border:"1px solid #1A2235",borderRadius:6,padding:"7px 12px",color:"#E2E8F0",fontSize:12,outline:"none",width:"100%"}}/>
                             <button onClick={()=>removeFromCohort(cohort.id,k.id)}
                               style={{background:"none",border:"none",color:"#334155",cursor:"pointer",fontSize:14,padding:4}}>✕</button>
                           </div>
@@ -538,7 +538,6 @@ export default function App() {
               </div>
             </div>
           )}
-
         </div>
       </div>
     </div>
