@@ -27,7 +27,7 @@ const initials = (name) => name?.split(" ").map(w=>w[0]).join("").slice(0,2).toU
 
 // Activity status helper
 const activityStatus = (daysSince, avgDays) => {
-  if (daysSince === null) return { label: "Unknown", color: "#334155", bg: "#0F172A", dot: "#334155" };
+  if (daysSince == null) return { label: "Unknown", color: "#334155", bg: "#0F172A", dot: "#334155" };
   if (daysSince > 365) return { label: "Dead", color: "#EF4444", bg: "#2D0A0A", dot: "#EF4444" };
   if (daysSince > 90)  return { label: `${Math.round(daysSince/30)}mo ago`, color: "#F59E0B", bg: "#1C1009", dot: "#F59E0B" };
   if (daysSince > 30)  return { label: `${Math.round(daysSince/7)}wk ago`, color: "#F59E0B", bg: "#1C1009", dot: "#F59E0B" };
@@ -87,7 +87,7 @@ export default function App() {
       if (filters.minSubs && k.subscribers < Number(filters.minSubs) * 1000) return false;
       if (filters.maxSubs && k.subscribers > Number(filters.maxSubs) * 1000) return false;
       if (filters.engMin && k.engagementRate < Number(filters.engMin)) return false;
-      if (filters.hideDead && k.daysSincePost !== null && k.daysSincePost > 180) return false;
+      if (filters.hideDead && k.daysSincePost != null && k.daysSincePost > 180) return false;
       return true;
     }).sort((a,b) => b[sortBy] - a[sortBy]);
   }, [results, filters, sortBy]);

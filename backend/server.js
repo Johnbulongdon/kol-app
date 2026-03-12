@@ -167,23 +167,27 @@ app.get("/api/search", async (req, res) => {
         return ch.contentDetails?.relatedPlaylists?.uploads;
       }).filter(Boolean);
 
-      // Batch: fetch latest video from each uploads playlist (1 item each)
+      // Build reverse map: playlistId → channelId
+      const playlistToChannel = {};
+      Object.entries(uploadsMap).forEach(([chId, plId]) => { if (plId) playlistToChannel[plId] = chId; });
+
+      // Batch: fetch latest videos from each uploads playlist
       const latestVideoMap = {};
       await Promise.all(uploadsPlaylistIds.map(async (playlistId) => {
         try {
           const r = await axios.get(`${BASE}/playlistItems`, {
-            params: { part: "snippet", playlistId, maxResults: 5, key: YT_KEY },
+            params: { part: "snippet,contentDetails", playlistId, maxResults: 5, key: YT_KEY },
           });
-          const channelId = r.data.items?.[0]?.snippet?.channelId;
-          const publishedAt = r.data.items?.[0]?.snippet?.publishedAt;
+          // Use reverse map to get channelId reliably
+          const channelId = playlistToChannel[playlistId] || r.data.items?.[0]?.snippet?.channelId;
+          if (!channelId) return;
           const dates = (r.data.items || [])
-            .map(i => i.snippet?.publishedAt)
+            .map(i => i.contentDetails?.videoPublishedAt || i.snippet?.publishedAt)
             .filter(Boolean)
             .map(d => new Date(d));
-          if (channelId && publishedAt) {
+          if (dates.length > 0) {
             latestVideoMap[channelId] = {
-              lastPostDate: publishedAt,
-              // Estimate posting frequency from last 5 videos
+              lastPostDate: dates[0].toISOString(),
               avgDaysBetweenPosts: dates.length >= 2
                 ? Math.round((dates[0] - dates[dates.length - 1]) / (1000 * 60 * 60 * 24) / (dates.length - 1))
                 : null,
