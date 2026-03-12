@@ -110,12 +110,10 @@ app.get("/api/search", async (req, res) => {
     let searchQuery = keyword.trim();
     if (language && language !== "en") {
       const keyLower = keyword.toLowerCase().trim();
-      // 1. Exact phrase match first (e.g. "crypto card" → "加密货币卡")
       const exactMatch = TRANSLATIONS[keyLower]?.[language];
       if (exactMatch) {
         searchQuery = exactMatch;
       } else {
-        // 2. Word-by-word translation fallback
         const words = keyLower.split(/\s+/);
         const translatedWords = words.map(w => TRANSLATIONS[w]?.[language] || w);
         const anyTranslated = translatedWords.some((t, i) => t !== words[i]);
@@ -123,62 +121,78 @@ app.get("/api/search", async (req, res) => {
       }
     }
 
-    const searchParams = {
-      part: "snippet",
-      q: searchQuery,
-      type: "channel",
-      maxResults: Math.min(Number(maxResults), 50),
-      key: YT_KEY,
-    };
-    if (pageToken) searchParams.pageToken = pageToken;
-
-    // regionCode is the most reliable way to get local-language creators
     const regionCode = LANG_TO_REGION[language];
-    if (regionCode) searchParams.regionCode = regionCode;
-    if (language) searchParams.relevanceLanguage = language;
+    const targetCount = Math.min(Number(maxResults), 25);
+    const seenIds = new Set();
+    let allChannels = [];
+    let currentPageToken = pageToken || null;
+    let lastNextPageToken = null;
+    const maxPages = 4; // fetch up to 4 pages (400 quota units) to fill results
 
-    const searchRes = await axios.get(`${BASE}/search`, { params: searchParams });
-    const items = searchRes.data.items || [];
-    const nextPageToken = searchRes.data.nextPageToken || null;
-
-    if (items.length === 0) return res.json({ channels: [], nextPageToken: null });
-
-    const channelIds = items.map(i => i.snippet.channelId).join(",");
-    const statsRes = await axios.get(`${BASE}/channels`, {
-      params: { part: "snippet,statistics,brandingSettings", id: channelIds, key: YT_KEY },
-    });
-
-    const channels = (statsRes.data.items || []).map(ch => {
-      const stats = ch.statistics || {};
-      const subs = parseInt(stats.subscriberCount || 0);
-      const views = parseInt(stats.viewCount || 0);
-      const videos = parseInt(stats.videoCount || 0);
-      const engRate = views > 0 && videos > 0 && subs > 0
-        ? Math.min(((views / videos / subs) * 100).toFixed(2), 99) : 0;
-
-      return {
-        id: ch.id,
-        name: ch.snippet.title,
-        handle: ch.snippet.customUrl ? `@${ch.snippet.customUrl.replace("@", "")}` : `@${ch.id}`,
-        description: ch.snippet.description?.slice(0, 120) || "",
-        avatar: ch.snippet.thumbnails?.default?.url || "",
-        country: ch.snippet.country || LANG_TO_REGION[language] || "N/A",
-        language: ch.snippet.defaultLanguage || ch.snippet.defaultAudioLanguage || language || "N/A",
-        subscribers: subs,
-        views,
-        videos,
-        engagementRate: parseFloat(engRate),
-        verified: subs > 100000,
-        youtubeUrl: `https://youtube.com/channel/${ch.id}`,
+    for (let page = 0; page < maxPages; page++) {
+      const searchParams = {
+        part: "snippet",
+        q: searchQuery,
+        type: "channel",
+        maxResults: 50, // always fetch max per page
+        key: YT_KEY,
       };
-    });
+      if (currentPageToken) searchParams.pageToken = currentPageToken;
+      if (regionCode) searchParams.regionCode = regionCode;
+      if (language) searchParams.relevanceLanguage = language;
 
-    // Post-filter: remove channels with no target-language characters in name/description
-    const filteredChannels = language
-      ? channels.filter(ch => hasTargetScript(ch, language))
-      : channels;
+      const searchRes = await axios.get(`${BASE}/search`, { params: searchParams });
+      const items = searchRes.data.items || [];
+      lastNextPageToken = searchRes.data.nextPageToken || null;
 
-    res.json({ channels: filteredChannels, nextPageToken });
+      if (items.length === 0) break;
+
+      // Fetch stats for this page's channels
+      const newIds = items.map(i => i.snippet.channelId).filter(id => !seenIds.has(id));
+      if (newIds.length === 0) break;
+      newIds.forEach(id => seenIds.add(id));
+
+      const statsRes = await axios.get(`${BASE}/channels`, {
+        params: { part: "snippet,statistics,brandingSettings", id: newIds.join(","), key: YT_KEY },
+      });
+
+      const pageChannels = (statsRes.data.items || []).map(ch => {
+        const stats = ch.statistics || {};
+        const subs = parseInt(stats.subscriberCount || 0);
+        const views = parseInt(stats.viewCount || 0);
+        const videos = parseInt(stats.videoCount || 0);
+        const engRate = views > 0 && videos > 0 && subs > 0
+          ? Math.min(((views / videos / subs) * 100).toFixed(2), 99) : 0;
+        return {
+          id: ch.id,
+          name: ch.snippet.title,
+          handle: ch.snippet.customUrl ? `@${ch.snippet.customUrl.replace("@", "")}` : `@${ch.id}`,
+          description: ch.snippet.description?.slice(0, 120) || "",
+          avatar: ch.snippet.thumbnails?.default?.url || "",
+          country: ch.snippet.country || regionCode || "N/A",
+          language: ch.snippet.defaultLanguage || ch.snippet.defaultAudioLanguage || language || "N/A",
+          subscribers: subs,
+          views,
+          videos,
+          engagementRate: parseFloat(engRate),
+          verified: subs > 100000,
+          youtubeUrl: `https://youtube.com/channel/${ch.id}`,
+        };
+      });
+
+      // Filter by script
+      const filtered = language
+        ? pageChannels.filter(ch => hasTargetScript(ch, language))
+        : pageChannels;
+
+      allChannels = allChannels.concat(filtered);
+
+      // Stop if we have enough results or no more pages
+      if (allChannels.length >= targetCount || !lastNextPageToken) break;
+      currentPageToken = lastNextPageToken;
+    }
+
+    res.json({ channels: allChannels.slice(0, targetCount), nextPageToken: lastNextPageToken });
   } catch (err) {
     console.error("YouTube API error:", err.response?.data || err.message);
     const ytErr = err.response?.data?.error;
