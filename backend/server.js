@@ -67,6 +67,31 @@ const TRANSLATIONS = {
   "passive income":{ ja:"不労所得", ko:"수동 소득", zh:"被动收入", ar:"دخل سلبي", hi:"निष्क्रिय आय", th:"รายได้เสริม", ru:"пассивный доход", tr:"pasif gelir", id:"penghasilan pasif" },
 };
 
+// Unicode script ranges for each language — used to filter out English-only channels
+const SCRIPT_REGEX = {
+  ja: /[\u3040-\u30FF\u4E00-\u9FFF]/,   // Hiragana, Katakana, Kanji
+  ko: /[\uAC00-\uD7AF\u1100-\u11FF]/,    // Hangul
+  zh: /[\u4E00-\u9FFF\u3400-\u4DBF]/,    // CJK characters
+  ar: /[\u0600-\u06FF]/,                    // Arabic
+  hi: /[\u0900-\u097F]/,                    // Devanagari
+  th: /[\u0E00-\u0E7F]/,                    // Thai
+  ru: /[\u0400-\u04FF]/,                    // Cyrillic
+  tr: null,  // Latin-based, can't filter by script
+  id: null,  // Latin-based
+  de: null,  // Latin-based
+  fr: null,  // Latin-based
+  es: null,  // Latin-based
+  pt: null,  // Latin-based
+  it: null,  // Latin-based
+};
+
+const hasTargetScript = (channel, language) => {
+  const regex = SCRIPT_REGEX[language];
+  if (!regex) return true; // Latin-based languages — can't filter by script
+  const text = (channel.name || "") + " " + (channel.description || "");
+  return regex.test(text);
+};
+
 app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
 app.use(express.json());
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: "Too many requests" } });
@@ -148,7 +173,12 @@ app.get("/api/search", async (req, res) => {
       };
     });
 
-    res.json({ channels, nextPageToken });
+    // Post-filter: remove channels with no target-language characters in name/description
+    const filteredChannels = language
+      ? channels.filter(ch => hasTargetScript(ch, language))
+      : channels;
+
+    res.json({ channels: filteredChannels, nextPageToken });
   } catch (err) {
     console.error("YouTube API error:", err.response?.data || err.message);
     const ytErr = err.response?.data?.error;
