@@ -125,32 +125,45 @@ app.get("/api/search", async (req, res) => {
     const targetCount = Math.min(Number(maxResults), 100);
     const seenIds = new Set();
     let allChannels = [];
-    let currentPageToken = pageToken || null;
     let lastNextPageToken = null;
-    const maxPages = 8; // fetch up to 8 pages to fill results
 
-    for (let page = 0; page < maxPages; page++) {
-      const searchParams = {
-        part: "snippet",
-        q: searchQuery,
-        type: "video",
-        maxResults: 50, // always fetch max per page
-        key: YT_KEY,
-      };
-      if (currentPageToken) searchParams.pageToken = currentPageToken;
-      if (regionCode) searchParams.regionCode = regionCode;
-      if (language) searchParams.relevanceLanguage = language;
+    // Build a list of search queries — main query + word variations for better coverage
+    const baseKw = searchQuery;
+    const kwWords = baseKw.split(/\s+/);
+    const searchQueries = [baseKw];
+    // Add individual words as fallback queries if multi-word
+    if (kwWords.length > 1) kwWords.forEach(w => { if (w.length > 3) searchQueries.push(w); });
+    // Add "review" and "explained" variants for better KOL coverage
+    searchQueries.push(`${baseKw} review`, `${baseKw} explained`, `${baseKw} 2024`);
 
-      const searchRes = await axios.get(`${BASE}/search`, { params: searchParams });
-      const items = searchRes.data.items || [];
-      lastNextPageToken = searchRes.data.nextPageToken || null;
+    for (const currentQuery of searchQueries) {
+      if (allChannels.length >= targetCount) break;
+      let currentPageToken = null;
+      const maxPages = 4;
 
-      if (items.length === 0) break;
+      for (let page = 0; page < maxPages; page++) {
+        if (allChannels.length >= targetCount) break;
+        const searchParams = {
+          part: "snippet",
+          q: currentQuery,
+          type: "video",
+          maxResults: 50,
+          key: YT_KEY,
+        };
+        if (currentPageToken) searchParams.pageToken = currentPageToken;
+        if (regionCode) searchParams.regionCode = regionCode;
+        if (language) searchParams.relevanceLanguage = language;
 
-      // Fetch stats for this page's channels
-      const newIds = items.map(i => i.snippet.channelId).filter(id => !seenIds.has(id));
-      if (newIds.length === 0) break;
-      newIds.forEach(id => seenIds.add(id));
+        const searchRes = await axios.get(`${BASE}/search`, { params: searchParams });
+        const items = searchRes.data.items || [];
+        lastNextPageToken = searchRes.data.nextPageToken || null;
+
+        if (items.length === 0) break;
+
+        // Fetch stats for this page's channels
+        const newIds = [...new Set(items.map(i => i.snippet.channelId))].filter(id => id && !seenIds.has(id));
+        if (newIds.length === 0) { currentPageToken = lastNextPageToken; continue; }
+        newIds.forEach(id => seenIds.add(id));
 
       const statsRes = await axios.get(`${BASE}/channels`, {
         params: { part: "snippet,statistics,brandingSettings", id: newIds.join(","), key: YT_KEY },
@@ -236,10 +249,11 @@ app.get("/api/search", async (req, res) => {
 
       allChannels = allChannels.concat(filtered);
 
-      // Stop if we have enough results or no more pages
-      if (allChannels.length >= targetCount || !lastNextPageToken) break;
-      currentPageToken = lastNextPageToken;
-    }
+        // Stop inner page loop if enough results or no more pages
+        if (allChannels.length >= targetCount || !lastNextPageToken) break;
+        currentPageToken = lastNextPageToken;
+      } // end page loop
+    } // end query loop
 
     res.json({ channels: allChannels.slice(0, targetCount), nextPageToken: lastNextPageToken });
   } catch (err) {
