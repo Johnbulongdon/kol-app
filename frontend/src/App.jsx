@@ -51,8 +51,7 @@ export default function App() {
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
-  const [nextPageToken, setNextPageToken] = useState(null);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingStep, setLoadingStep] = useState("");
   const [error, setError] = useState("");
   const [filters, setFilters] = useState({ minSubs:"", maxSubs:"", language:"", engMin:"", hideDead: true });
   const [selected, setSelected] = useState([]);
@@ -64,22 +63,31 @@ export default function App() {
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null), 3000); };
 
-  const doSearch = useCallback(async (pageToken = null) => {
+  const doSearch = useCallback(async () => {
     if (!keyword.trim()) return setError("Please enter a keyword");
     setError("");
-    pageToken ? setLoadingMore(true) : setLoading(true);
+    setLoading(true);
+    setResults([]);
+    setSearched(false);
+    const steps = ["Searching YouTube...","Finding channels...","Fetching stats...","Checking activity...","Almost done..."];
+    let stepIdx = 0;
+    setLoadingStep(steps[0]);
+    const stepTimer = setInterval(() => {
+      stepIdx = Math.min(stepIdx + 1, steps.length - 1);
+      setLoadingStep(steps[stepIdx]);
+    }, 2500);
     try {
       const params = new URLSearchParams({ keyword, maxResults: 100 });
-      if (pageToken) params.append("pageToken", pageToken);
       if (filters.language) params.append("language", filters.language);
       const res = await fetch(`${API}/api/search?${params}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Search failed");
-      if (pageToken) setResults(prev => [...prev, ...data.channels]);
-      else { setResults(data.channels || []); setSearched(true); }
-      setNextPageToken(data.nextPageToken || null);
+      const seen = new Set();
+      const unique = (data.channels || []).filter(c => seen.has(c.id) ? false : seen.add(c.id));
+      setResults(unique);
+      setSearched(true);
     } catch (err) { setError(err.message); }
-    finally { setLoading(false); setLoadingMore(false); }
+    finally { clearInterval(stepTimer); setLoading(false); setLoadingStep(""); }
   }, [keyword, filters.language]);
 
   const filtered = useMemo(() => {
@@ -322,7 +330,15 @@ export default function App() {
                 </div>
               )}
 
-              {loading && <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>Searching YouTube...</div>}
+              {loading && (
+                <div style={{textAlign:"center",padding:"80px 20px"}}>
+                  <div style={{display:"inline-flex",alignItems:"center",gap:12,background:"#080B14",border:"1px solid #1A2235",borderRadius:10,padding:"18px 28px"}}>
+                    <div style={{width:16,height:16,borderRadius:"50%",border:"2px solid #38BDF8",borderTopColor:"transparent",animation:"spin 0.8s linear infinite"}}/>
+                    <span style={{fontSize:14,color:"#94A3B8",fontWeight:500}}>{loadingStep}</span>
+                  </div>
+                  <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+                </div>
+              )}
               {!loading && searched && filtered.length===0 && (
                 <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>No results — try a different keyword or adjust filters</div>
               )}
@@ -398,15 +414,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  {nextPageToken && (
-                    <div style={{textAlign:"center",marginTop:18}}>
-                      <button onClick={()=>doSearch(nextPageToken)} disabled={loadingMore}
-                        style={{background:"none",border:"1px solid #1E2A3A",borderRadius:7,
-                          padding:"11px 28px",fontSize:13,color:"#64748B",cursor:"pointer",fontWeight:500}}>
-                        {loadingMore?"Loading...":"Load more results"}
-                      </button>
-                    </div>
-                  )}
+
                 </>
               )}
 
