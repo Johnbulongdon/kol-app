@@ -69,7 +69,7 @@ export default function App() {
     setError("");
     pageToken ? setLoadingMore(true) : setLoading(true);
     try {
-      const params = new URLSearchParams({ keyword, maxResults: 25 });
+      const params = new URLSearchParams({ keyword, maxResults: 100 });
       if (pageToken) params.append("pageToken", pageToken);
       if (filters.language) params.append("language", filters.language);
       const res = await fetch(`${API}/api/search?${params}`);

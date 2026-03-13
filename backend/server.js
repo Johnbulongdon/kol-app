@@ -122,18 +122,18 @@ app.get("/api/search", async (req, res) => {
     }
 
     const regionCode = LANG_TO_REGION[language];
-    const targetCount = Math.min(Number(maxResults), 25);
+    const targetCount = Math.min(Number(maxResults), 100);
     const seenIds = new Set();
     let allChannels = [];
     let currentPageToken = pageToken || null;
     let lastNextPageToken = null;
-    const maxPages = 4; // fetch up to 4 pages (400 quota units) to fill results
+    const maxPages = 8; // fetch up to 8 pages to fill results
 
     for (let page = 0; page < maxPages; page++) {
       const searchParams = {
         part: "snippet",
         q: searchQuery,
-        type: "channel",
+        type: "video",
         maxResults: 50, // always fetch max per page
         key: YT_KEY,
       };
