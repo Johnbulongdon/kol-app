@@ -45,13 +45,63 @@ const freqLabel = (avgDays) => {
   return "Rarely";
 };
 
+// Relevance score — 0 to 100
+const calcRelevance = (channel, keyword) => {
+  let score = 0;
+  const kw = keyword.toLowerCase().trim();
+  const words = kw.split(/\s+/);
+  const name = (channel.name || "").toLowerCase();
+  const desc = (channel.description || "").toLowerCase();
+  const handle = (channel.handle || "").toLowerCase();
+
+  // 1. Keyword match (0-40pts)
+  if (name.includes(kw)) score += 40;
+  else if (words.some(w => w.length > 2 && name.includes(w))) score += 20;
+  if (handle.includes(kw)) score += 15;
+  else if (words.some(w => w.length > 2 && handle.includes(w))) score += 8;
+  if (desc.includes(kw)) score += 10;
+  else if (words.some(w => w.length > 2 && desc.includes(w))) score += 5;
+
+  // 2. Engagement rate (0-25pts)
+  const er = channel.engagementRate || 0;
+  if (er >= 10) score += 25;
+  else if (er >= 5) score += 20;
+  else if (er >= 3) score += 14;
+  else if (er >= 1) score += 7;
+
+  // 3. Activity (0-20pts)
+  const d = channel.daysSincePost;
+  if (d != null) {
+    if (d <= 7)  score += 20;
+    else if (d <= 30) score += 14;
+    else if (d <= 90) score += 7;
+  }
+
+  // 4. Channel size sweet spot (0-15pts)
+  const subs = channel.subscribers || 0;
+  if (subs >= 10000 && subs <= 500000)  score += 15;
+  else if (subs >= 500000 && subs <= 2000000) score += 10;
+  else if (subs >= 1000 && subs < 10000) score += 7;
+  else if (subs > 2000000) score += 4;
+
+  return Math.min(score, 100);
+};
+
+const relevanceColor = (score) => {
+  if (score >= 75) return { color: "#22D3A0", bg: "#052E16" };
+  if (score >= 50) return { color: "#F59E0B", bg: "#1C1009" };
+  if (score >= 25) return { color: "#94A3B8", bg: "#0F172A" };
+  return { color: "#475569", bg: "#0A0F18" };
+};
+
 export default function App() {
   const [view, setView] = useState("search");
   const [keyword, setKeyword] = useState("");
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
-  const [loadingStep, setLoadingStep] = useState("");
+  const [nextPageToken, setNextPageToken] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [filters, setFilters] = useState({ minSubs:"", maxSubs:"", language:"", engMin:"", hideDead: true });
   const [selected, setSelected] = useState([]);
@@ -59,46 +109,42 @@ export default function App() {
   const [cohortName, setCohortName] = useState("");
   const [activeCohort, setActiveCohort] = useState(null);
   const [toast, setToast] = useState(null);
-  const [sortBy, setSortBy] = useState("subscribers");
+  const [sortBy, setSortBy] = useState("relevanceScore");
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null), 3000); };
 
-  const doSearch = useCallback(async () => {
+  const doSearch = useCallback(async (pageToken = null) => {
     if (!keyword.trim()) return setError("Please enter a keyword");
     setError("");
-    setLoading(true);
-    setResults([]);
-    setSearched(false);
-    const steps = ["Searching YouTube...","Finding channels...","Fetching stats...","Checking activity...","Almost done..."];
-    let stepIdx = 0;
-    setLoadingStep(steps[0]);
-    const stepTimer = setInterval(() => {
-      stepIdx = Math.min(stepIdx + 1, steps.length - 1);
-      setLoadingStep(steps[stepIdx]);
-    }, 2500);
+    pageToken ? setLoadingMore(true) : setLoading(true);
     try {
-      const params = new URLSearchParams({ keyword, maxResults: 100 });
+      const params = new URLSearchParams({ keyword, maxResults: 25 });
+      if (pageToken) params.append("pageToken", pageToken);
       if (filters.language) params.append("language", filters.language);
       const res = await fetch(`${API}/api/search?${params}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Search failed");
-      const seen = new Set();
-      const unique = (data.channels || []).filter(c => seen.has(c.id) ? false : seen.add(c.id));
-      setResults(unique);
-      setSearched(true);
+      if (pageToken) setResults(prev => [...prev, ...data.channels]);
+      else { setResults(data.channels || []); setSearched(true); }
+      setNextPageToken(data.nextPageToken || null);
     } catch (err) { setError(err.message); }
-    finally { clearInterval(stepTimer); setLoading(false); setLoadingStep(""); }
+    finally { setLoading(false); setLoadingMore(false); }
   }, [keyword, filters.language]);
 
   const filtered = useMemo(() => {
-    return results.filter(k => {
-      if (filters.minSubs && k.subscribers < Number(filters.minSubs) * 1000) return false;
-      if (filters.maxSubs && k.subscribers > Number(filters.maxSubs) * 1000) return false;
-      if (filters.engMin && k.engagementRate < Number(filters.engMin)) return false;
-      if (filters.hideDead && k.daysSincePost != null && k.daysSincePost > 180) return false;
-      return true;
-    }).sort((a,b) => b[sortBy] - a[sortBy]);
-  }, [results, filters, sortBy]);
+    return results
+      .map(k => ({ ...k, relevanceScore: calcRelevance(k, keyword) }))
+      .filter(k => {
+        if (filters.minSubs && k.subscribers < Number(filters.minSubs) * 1000) return false;
+        if (filters.maxSubs && k.subscribers > Number(filters.maxSubs) * 1000) return false;
+        if (filters.engMin && k.engagementRate < Number(filters.engMin)) return false;
+        if (filters.hideDead && k.daysSincePost != null && k.daysSincePost > 180) return false;
+        return true;
+      })
+      .sort((a,b) => sortBy === "relevanceScore"
+        ? b.relevanceScore - a.relevanceScore
+        : b[sortBy] - a[sortBy]);
+  }, [results, filters, sortBy, keyword]);
 
   const toggle = (id) => setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s,id]);
 
@@ -299,7 +345,7 @@ export default function App() {
                     )}
                     <div style={{display:"flex",alignItems:"center",gap:4,background:"#080B14",border:"1px solid #1A2235",borderRadius:6,padding:"4px 6px"}}>
                       <span style={{fontSize:11,color:"#475569",paddingLeft:4}}>Sort:</span>
-                      {[["subscribers","Subs"],["views","Views"],["engagementRate","Eng%"]].map(([s,l])=>(
+                      {[["relevanceScore","Relevance"],["subscribers","Subs"],["views","Views"],["engagementRate","Eng%"]].map(([s,l])=>(
                         <button key={s} className="chip" onClick={()=>setSortBy(s)} style={{
                           background:sortBy===s?"#0F1929":"none",
                           border:`1px solid ${sortBy===s?"#38BDF8":"transparent"}`,
@@ -330,15 +376,7 @@ export default function App() {
                 </div>
               )}
 
-              {loading && (
-                <div style={{textAlign:"center",padding:"80px 20px"}}>
-                  <div style={{display:"inline-flex",alignItems:"center",gap:12,background:"#080B14",border:"1px solid #1A2235",borderRadius:10,padding:"18px 28px"}}>
-                    <div style={{width:16,height:16,borderRadius:"50%",border:"2px solid #38BDF8",borderTopColor:"transparent",animation:"spin 0.8s linear infinite"}}/>
-                    <span style={{fontSize:14,color:"#94A3B8",fontWeight:500}}>{loadingStep}</span>
-                  </div>
-                  <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-                </div>
-              )}
+              {loading && <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>Searching YouTube...</div>}
               {!loading && searched && filtered.length===0 && (
                 <div style={{textAlign:"center",padding:80,color:"#334155",fontSize:14}}>No results — try a different keyword or adjust filters</div>
               )}
@@ -347,14 +385,14 @@ export default function App() {
               {!loading && filtered.length>0 && (
                 <>
                   <div style={{border:"1px solid #1A2235",borderRadius:10,overflow:"hidden"}}>
-                    <div style={{display:"grid",gridTemplateColumns:"44px 2.5fr 90px 110px 85px 55px 120px 60px",
+                    <div style={{display:"grid",gridTemplateColumns:"44px 2.5fr 75px 90px 110px 85px 55px 120px 60px",
                       padding:"11px 20px",background:"#080B14",borderBottom:"1px solid #1A2235",
                       fontSize:11,fontWeight:600,color:"#475569",letterSpacing:"0.05em",textTransform:"uppercase",gap:8,alignItems:"center"}}>
-                      <div/><div>Creator</div><div>Subscribers</div><div>Total Views</div><div>Engagement</div><div>Videos</div><div>Activity</div><div>Link</div>
+                      <div/><div>Creator</div><div>Relevance</div><div>Subscribers</div><div>Total Views</div><div>Engagement</div><div>Videos</div><div>Activity</div><div>Link</div>
                     </div>
                     {filtered.map(k=>(
                       <div key={k.id} className="row" onClick={()=>toggle(k.id)} style={{
-                        display:"grid",gridTemplateColumns:"44px 2.5fr 90px 110px 85px 55px 120px 60px",
+                        display:"grid",gridTemplateColumns:"44px 2.5fr 75px 90px 110px 85px 55px 120px 60px",
                         padding:"13px 20px",borderBottom:"1px solid #0F1520",cursor:"pointer",gap:8,
                         background:selected.includes(k.id)?"#0D1829":"#0C0F1A",
                         borderLeft:selected.includes(k.id)?"3px solid #38BDF8":"3px solid transparent",
@@ -365,6 +403,14 @@ export default function App() {
                           display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#0A0F1A",flexShrink:0}}>
                           {selected.includes(k.id)&&"✓"}
                         </div>
+                        {(() => { const rc = relevanceColor(k.relevanceScore); return (
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                            <div style={{fontSize:13,fontWeight:700,color:rc.color}}>{k.relevanceScore}</div>
+                            <div style={{width:36,height:3,borderRadius:2,background:"#1A2235",overflow:"hidden"}}>
+                              <div style={{width:`${k.relevanceScore}%`,height:"100%",background:rc.color,borderRadius:2}}/>
+                            </div>
+                          </div>
+                        ); })()}
                         <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
                           {k.avatar
                             ? <img src={k.avatar} alt="" style={{width:38,height:38,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:"2px solid #1A2235"}}/>
@@ -414,7 +460,15 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-
+                  {nextPageToken && (
+                    <div style={{textAlign:"center",marginTop:18}}>
+                      <button onClick={()=>doSearch(nextPageToken)} disabled={loadingMore}
+                        style={{background:"none",border:"1px solid #1E2A3A",borderRadius:7,
+                          padding:"11px 28px",fontSize:13,color:"#64748B",cursor:"pointer",fontWeight:500}}>
+                        {loadingMore?"Loading...":"Load more results"}
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
 
