@@ -403,14 +403,6 @@ export default function App() {
                           display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#0A0F1A",flexShrink:0}}>
                           {selected.includes(k.id)&&"✓"}
                         </div>
-                        {(() => { const rc = relevanceColor(k.relevanceScore); return (
-                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-                            <div style={{fontSize:13,fontWeight:700,color:rc.color}}>{k.relevanceScore}</div>
-                            <div style={{width:36,height:3,borderRadius:2,background:"#1A2235",overflow:"hidden"}}>
-                              <div style={{width:`${k.relevanceScore}%`,height:"100%",background:rc.color,borderRadius:2}}/>
-                            </div>
-                          </div>
-                        ); })()}
                         <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
                           {k.avatar
                             ? <img src={k.avatar} alt="" style={{width:38,height:38,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:"2px solid #1A2235"}}/>
@@ -431,6 +423,14 @@ export default function App() {
                             </div>
                           </div>
                         </div>
+                        {(() => { const rc = relevanceColor(k.relevanceScore); return (
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                            <div style={{fontSize:13,fontWeight:700,color:rc.color}}>{k.relevanceScore}</div>
+                            <div style={{width:36,height:3,borderRadius:2,background:"#1A2235",overflow:"hidden"}}>
+                              <div style={{width:`${k.relevanceScore}%`,height:"100%",background:rc.color,borderRadius:2}}/>
+                            </div>
+                          </div>
+                        ); })()}
                         <div style={{fontSize:14,color:"#E2E8F0",fontWeight:600}}>{fmt(k.subscribers)}</div>
                         <div style={{fontSize:13,color:"#94A3B8"}}>{fmt(k.views)}</div>
                         <div style={{fontSize:13,fontWeight:600,
